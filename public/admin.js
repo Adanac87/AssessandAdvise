@@ -6,6 +6,7 @@
 
   let me = { admin: false }, cfg = {}, responses = [], insights = null, tab = "dashboard", openId = null;
   let aiBusy = false, aiError = "", loading = true, logoBust = Date.now();
+  let findings = {}, editing = null, fxDraft = null, fxMsg = "";
   const content = SECTIONS.filter(s => s.fields);
   const submitted = () => responses.filter(r => r.status === "submitted");
   const avg = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null;
@@ -113,6 +114,22 @@
     <p class="info" style="margin-top:16px">Storage: ${esc(me.storage === "postgres" ? "PostgreSQL" : "local file (development only — add a Postgres database before going live)")} · Automatic findings: ${me.aiEnabled ? "on" : "off"}</p>`;
   }
 
+  // ---------- findings ----------
+  function findingsView() {
+    const st = FX.stats(responses);
+    const when = findings.updatedAt ? `Last saved ${new Date(findings.updatedAt).toLocaleString()}` : "Not saved yet";
+    return `<div class="page-head"><div><h1>Findings</h1><p>The leadership report for ${esc(cfg.clientName)}. Numbers update from live responses; the written sections are yours to edit. ${esc(when)}.</p></div>
+      <div class="toolbar"><a class="btn primary small" href="/report" target="_blank" rel="noopener">Open leadership report ↗</a></div></div>
+      ${st.testCount ? `<div class="note">${st.testCount} test response${st.testCount === 1 ? " is" : "s are"} excluded from these numbers (names starting with “TEST”). Delete ${st.testCount === 1 ? "it" : "them"} under Responses when you're done testing.</div>` : ""}
+      ${fxMsg ? `<div class="note">${esc(fxMsg)}</div>` : ""}
+      <div class="report-wrap in-dash" id="fxReport">${FX.render(findings, { responses, cfg }, { editable: true })}</div>`;
+  }
+  function mountEditor() {
+    if (tab !== "findings" || !editing) return;
+    const host = document.querySelector(`#fxReport [data-sec="${editing}"]`);
+    if (host) { host.innerHTML = FX.editor(editing, fxDraft || findings); host.scrollIntoView({ block: "start" }); }
+  }
+
   // ---------- login ----------
   function loginView(err) {
     return `<div class="login"><div class="card"><h1 style="margin:0 0 6px;font-size:26px">Consultant sign-in</h1><p class="muted" style="margin:0 0 24px">Enter the dashboard password set in Railway.</p>
@@ -131,18 +148,19 @@
     header();
     const app = $("#app");
     if (!me.admin) { app.innerHTML = loginView(err); const pw = $("#pw"); if (pw) pw.focus(); return; }
-    app.innerHTML = `<div class="wide">${tab === "responses" ? responsesView() : tab === "settings" ? settingsView() : dashboard()}</div>`;
+    app.innerHTML = `<div class="wide">${tab === "responses" ? responsesView() : tab === "settings" ? settingsView() : tab === "findings" ? findingsView() : dashboard()}</div>`;
+    mountEditor();
   }
 
   // ---------- data ----------
   async function load() {
     try {
-      const [r, i] = await Promise.all([api("/api/admin/responses"), api("/api/admin/insights")]);
-      responses = r; if (!aiBusy) insights = i; loading = false;
-      if (tab !== "settings") render();
+      const [r, i, f] = await Promise.all([api("/api/admin/responses"), api("/api/admin/insights"), api("/api/admin/findings")]);
+      responses = r; if (!aiBusy) insights = i; if (!editing) findings = f || {}; loading = false;
+      if (tab !== "settings" && !editing) render();
     } catch (e) { if (e.status === 401) { me.admin = false; render("Your session ended. Please sign in again."); } }
   }
-  setInterval(() => { if (me.admin && tab !== "settings" && document.visibilityState === "visible") load(); }, 30000);
+  setInterval(() => { if (me.admin && tab !== "settings" && !editing && document.visibilityState === "visible") load(); }, 30000);
 
   async function runAI() {
     aiBusy = true; aiError = ""; render();
@@ -184,7 +202,23 @@
   function keep(fn) { const ids = ["s-client", "s-consultant", "s-contact", "s-due", "s-model"]; const v = ids.map(i => document.getElementById(i)?.value); fn(); ids.forEach((i, n) => { const el = document.getElementById(i); if (el && v[n] != null) el.value = v[n]; }); }
   document.addEventListener("click", async e => {
     const b = e.target.closest("button, tr[data-open]"); if (!b) return;
-    if (b.dataset.tab) { tab = b.dataset.tab; draft = {}; applyBrand(cfg); render(); window.scrollTo({ top: 0 }); return; }
+    if (b.dataset.tab) { tab = b.dataset.tab; draft = {}; editing = null; fxDraft = null; fxMsg = ""; applyBrand(cfg); render(); window.scrollTo({ top: 0 }); return; }
+    if (b.dataset.edit) { editing = b.dataset.edit; fxDraft = null; fxMsg = ""; render(); return; }
+    if (b.dataset.fxcancel) { editing = null; fxDraft = null; render(); return; }
+    if (b.dataset.fxadd || b.dataset.fxdel != null || b.dataset.fxmove != null) {
+      const cur = FX.collect(editing, document, true), list = cur.items || [];
+      if (b.dataset.fxadd) list.push({});
+      else if (b.dataset.fxdel != null) list.splice(+b.dataset.fxdel, 1);
+      else { const n = +b.dataset.fxmove; [list[n - 1], list[n]] = [list[n], list[n - 1]]; }
+      cur.items = list; fxDraft = { ...findings, [editing]: cur }; mountEditor(); return;
+    }
+    if (b.dataset.fxsave) {
+      const key = b.dataset.fxsave, next = { ...findings, [key]: FX.collect(key, document) };
+      b.disabled = true; b.textContent = "Saving…";
+      try { findings = await api("/api/admin/findings", { method: "PUT", body: next }); editing = null; fxDraft = null; fxMsg = ""; render(); const el = document.querySelector(`[data-sec="${key}"]`); if (el) el.scrollIntoView({ block: "start" }); }
+      catch (err) { b.disabled = false; b.textContent = "Save section"; fxMsg = err.message; }
+      return;
+    }
     if (b.dataset.open) { openId = b.dataset.open; render(); return; }
     switch (b.id) {
       case "reload": load(); break;
