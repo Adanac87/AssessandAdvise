@@ -171,6 +171,17 @@ app.put("/api/admin/logo", requireAdmin, wrap(async (req, res) => {
 }));
 app.delete("/api/admin/logo", requireAdmin, wrap(async (req, res) => { await store.setSetting("logo", {}); res.json({ ok: true }); }));
 
+app.get("/api/admin/findings", requireAdmin, wrap(async (req, res) => res.json((await store.getSettings()).findings || {})));
+app.put("/api/admin/findings", requireAdmin, wrap(async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const json = JSON.stringify(body);
+  if (json.length > 400000) return res.status(400).json({ error: "Findings are too large to save." });
+  const clean = JSON.parse(json);
+  clean.updatedAt = new Date().toISOString();
+  await store.setSetting("findings", clean);
+  res.json(clean);
+}));
+
 app.get("/api/admin/insights", requireAdmin, wrap(async (req, res) => res.json((await store.latestInsights()) || null)));
 let aiRunning = false;
 app.post("/api/admin/insights", requireAdmin, wrap(async (req, res) => {
@@ -185,6 +196,7 @@ app.post("/api/admin/insights", requireAdmin, wrap(async (req, res) => {
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"], maxAge: PROD ? "10m" : 0 }));
 app.get("/admin", (req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
+app.get("/report", (req, res) => res.sendFile(path.join(__dirname, "public", "report.html")));
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: "Something went wrong on our side. Please try again." }); });
 
